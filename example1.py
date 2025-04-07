@@ -23,7 +23,7 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(16 * 4 * 4,120) # 输入16 * 4 * 4个特征数，输出为120个特征数
         self.fc2 = nn.Linear(120,84) # 输入120个特征数，输出为84个特征数
         self.fc3 = nn.Linear(84,10) # 输入为84个特征数，输出10个特征数
-    def forward(self,input):
+    def forward(self,input):       
         # 前向传播
         # 使用torch.nn.functional可以直接使用某些激活函数
         c1 = F.relu(self.conv1(input)) #进入第一个卷积层，输入为一个通道的input（如灰度图），输出为6个通道的特征图，使用ReLU激活函数
