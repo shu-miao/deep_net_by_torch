@@ -1,113 +1,78 @@
-import numpy as np
-import pandas as pd
+'''
+U-net
+1D U-net是一种专为处理一维序列数据（音频、时间序列、传感器信号）设计的深度学习模型。
+它通过“编码-解码”结构和“跳跃连接”实现高效特征提取与细节恢复。
+广泛应用于信号去噪、时序预测、语音增强等任务。
+'''
+
 import torch
 import torch.nn as nn
-import torch.optim as optim
 
+class DoubleConv(nn.Module):
+    '''双层卷积块'''
+    def __init__(self,in_channels,out_channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(in_channels,out_channels,kernel_size=3,padding=1),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True),
 
-# 定义位置编码函数
-def positional_encoding(lat, lon, d_model):
-    """
-    将经纬度转换为位置编码
-    :param lat: 纬度
-    :param lon: 经度
-    :param d_model: 模型维度
-    :return: 位置编码
-    """
-    # 归一化经纬度
-    lat = (lat + 90) / 180  # 将纬度转换到[0, 1]范围
-    lon = (lon + 180) / 360  # 将经度转换到[0, 1]范围
+            # 输入通道是上一层的输出通道数，在双层卷积块中，第二个卷积层的输入通道数和输出通道数都等于第一个卷积层的输出通道数
+            nn.Conv1d(out_channels,out_channels,kernel_size=3,padding=1),
 
-    # 生成位置编码
-    position = np.zeros((1, d_model))
-    for pos in range(d_model // 2):
-        position[0, 2 * pos] = np.sin(lat * (2 * np.pi) * (1 / (10000 ** (2 * pos / d_model))))
-        position[0, 2 * pos + 1] = np.cos(lat * (2 * np.pi) * (1 / (10000 ** (2 * pos / d_model))))
-        position[0, 2 * pos] += np.sin(lon * (2 * np.pi) * (1 / (10000 ** (2 * pos / d_model))))
-        position[0, 2 * pos + 1] += np.cos(lon * (2 * np.pi) * (1 / (10000 ** (2 * pos / d_model))))
-
-    return torch.tensor(position, dtype=torch.float32)
-
-
-# 定义Transformer模型
-class TimeSeriesTransformer(nn.Module):
-    def __init__(self, d_model, n_heads, num_layers):
-        super(TimeSeriesTransformer, self).__init__()
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads),
-            num_layers=num_layers
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(inplace=True)
         )
-        self.fc = nn.Linear(d_model, 1)  # 输出速度
 
-    def forward(self, x):
-        x = self.encoder(x)
-        return self.fc(x[-1])  # 取最后一个时间步的输出
+    def forward(self,x):
+        return self.conv(x)
 
 
-# 定义元胞自动机
-class CellularAutomaton:
-    def __init__(self, grid_size):
-        self.grid_size = grid_size
-        self.grid = np.zeros((grid_size, grid_size))  # 初始化网格
+class UNet1D(nn.Module):
+    def __init__(self,input_channels=1,output_channels=1):
+        super().__init__()
+        # 编码器
+        self.enc1 = DoubleConv(input_channels,64)
+        self.pool1 = nn.MaxPool1d(2)
+        self.enc2 = DoubleConv(64,128)
+        self.pool2 = nn.MaxPool1d(2)
 
-    def update(self, speed):
-        """
-        更新元胞状态
-        :param speed: 速度值
-        """
-        # 这里可以根据速度更新元胞状态的逻辑
-        self.grid += speed.item()  # 简单示例：将速度加到网格上
+        # 瓶颈层
+        self.bottleneck = DoubleConv(128,256)
 
+        # 解码器
+        self.up1 = nn.ConvTranspose1d(256,128,kernel_size=2,stride=2)
+        self.dec1 = DoubleConv(256,128)
+        self.up2 = nn.ConvTranspose1d(128,64,kernel_size=2,stride=2)
+        self.dec2 = DoubleConv(128,64)
 
-# 主函数
-def main():
-    # 数据载入
-    data_file = 'data.csv'  # CSV 文件名
-    data = pd.read_csv(data_file)
+        # 输出层
+        self.out = nn.Conv1d(64,output_channels,kernel_size=1)
 
-    # 提取特征和目标速度
-    latitudes = data['纬度'].values
-    longitudes = data['经度'].values
-    features = data[['特征1', '特征2', '特征3', '特征4', '特征5', '特征6', '特征7']].values
-    speeds = data['速度'].values
+    def forward(self,x):
+        # 编码器
+        enc1 = self.enc1(x) # 输入形状：[N,1,100]
+        enc2 = self.enc2(self.pool1(enc1))
 
-    # 数据预处理
-    d_model = 16
-    inputs = []
-    for lat, lon, *feature in zip(latitudes, longitudes, *features.T):
-        pos_enc = positional_encoding(lat, lon, d_model)
-        feature_tensor = torch.tensor(feature, dtype=torch.float32)
-        combined_input = torch.cat((pos_enc, feature_tensor), dim=0)
-        inputs.append(combined_input)
-    inputs = torch.stack(inputs).unsqueeze(1)  # 增加时间维度
+        # 瓶颈层
+        bottleneck = self.bottleneck(self.pool2(enc2)) # 形状 [N,256,25]
 
-    # 初始化模型
-    model = TimeSeriesTransformer(d_model=d_model + 7, n_heads=4, num_layers=2)  # d_model增加特征数量
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.MSELoss()
+        # 解码器
+        dec1 = self.up1(bottleneck) # 形状 [N,128,50]
+        dec1 = torch.cat([dec1,enc2],dim=1) # 拼接后 [N,256,50]
+        dec1 = self.dec1(dec1)
 
-    # 训练模型
-    for epoch in range(100):
-        model.train()
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, torch.tensor(speeds, dtype=torch.float32).unsqueeze(1))
-        loss.backward()
-        optimizer.step()
-        if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch + 1}/100], Loss: {loss.item():.4f}')
+        dec2 = self.up2(dec1) # 形状 [N,64,100]
+        dec2 = torch.cat([dec2,enc1],dim=1) # 拼接后 [N,128,100]
+        dec2 = self.dec2(dec2)
 
-    # 使用模型进行预测
-    model.eval()
-    predicted_speed = model(inputs[-1].unsqueeze(0))  # 预测最后一个时间步的速度
-
-    # 更新元胞自动机
-    ca = CellularAutomaton(grid_size=10)
-    ca.update(predicted_speed)
-
-    print("Updated Cellular Automaton Grid:")
-    print(ca.grid)
+        return self.out(dec2) # 输出形状 [N,1,100]
 
 
-if __name__ == "__main__":
-    main()
+# 初始化模型
+model = UNet1D(input_channels=1,output_channels=1)
+
+# 模拟输入数据：batch_size=4，通道=1，序列长度100
+input_tensor = torch.randn(4,1,100)
+output = model(input_tensor)
+print(output.shape) # 输出形状：torch.Size([4,1,100])
